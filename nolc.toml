@@ -4,6 +4,6 @@ version = "0.1.0"
 entree = "src/lib.nol"
 auteur = "daliranas <bastien@languedoc.ovh>"
 licence = "MIT"
-description = "API IA agnostique du fournisseur (messages, requetes, JSON, outils) en pur Nolc."
+description = "API IA agnostique du fournisseur (messages, requêtes, JSON, outils) en pur Nolc."
 
 [dependances]
