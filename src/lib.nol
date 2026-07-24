@@ -1,0 +1,152 @@
+// nol.ai — API IA agnostique du fournisseur, en pur Nolc.
+//
+// Cœur (v0.1) : modèle de conversation (messages typés par rôle), requête de
+// génération avec options, sérialisation JSON au format « chat » compatible
+// avec la plupart des fournisseurs (OpenAI-like), et extraction du contenu de
+// réponse. Streaming, sortie structurée, appels d'outils, embeddings, vision et
+// audio, quotas et statistiques de tokens : feuille de route — voir README.
+
+// ---- Messages ----
+
+record Message {
+    role: Text,  // "system" | "user" | "assistant" | "tool"
+    contenu: Text
+}
+
+fn message_systeme(contenu: Text) -> Message {
+    return Message { role: "system", contenu: contenu }
+}
+fn message_utilisateur(contenu: Text) -> Message {
+    return Message { role: "user", contenu: contenu }
+}
+fn message_assistant(contenu: Text) -> Message {
+    return Message { role: "assistant", contenu: contenu }
+}
+
+// ---- Requête ----
+//
+// temperature_millieme : température × 1000 (700 = 0.7), pour rester en Int.
+// max_tokens : 0 = illimité / défaut du fournisseur.
+
+record Requete {
+    modele: Text,
+    messages: List<Message>,
+    temperature_millieme: Int,
+    max_tokens: Int
+}
+
+fn requete_neuve(modele: Text) -> Requete {
+    var msgs: List<Message> = []
+    return Requete { modele: modele, messages: msgs, temperature_millieme: 700, max_tokens: 0 }
+}
+
+// ---- Sérialisation JSON (échappement inline, sans dépendance) ----
+
+fn ai_echappe(s: Text) -> Text {
+    var r = replace(s, "\\", "\\\\")
+    r = replace(r, "\"", "\\\"")
+    r = replace(r, "\n", "\\n")
+    r = replace(r, "\r", "\\r")
+    r = replace(r, "\t", "\\t")
+    return r
+}
+
+fn ai_chaine(s: Text) -> Text {
+    return "\"" + ai_echappe(s) + "\""
+}
+
+// Un message en objet JSON : {"role":"...","content":"..."}.
+fn message_json(m: Message) -> Text {
+    return "{\"role\":" + ai_chaine(m.role) + ",\"content\":" + ai_chaine(m.contenu) + "}"
+}
+
+// Rendu « température » en décimal : 700 -> "0.7", 1500 -> "1.5".
+fn ai_temperature_texte(millieme: Int) -> Text {
+    let entier = millieme / 1000
+    let frac = millieme % 1000
+    var f = text(frac)
+    while len(f) < 3 {
+        f = "0" + f
+    }
+    return text(entier) + "." + f
+}
+
+// Corps JSON de la requête, format chat.
+fn requete_json(r: Requete) -> Text {
+    var msgs = "["
+    var premier = true
+    for m in r.messages {
+        if not premier {
+            msgs = msgs + ","
+        }
+        msgs = msgs + message_json(m)
+        premier = false
+    }
+    msgs = msgs + "]"
+    var out = "{\"model\":" + ai_chaine(r.modele)
+    out = out + ",\"messages\":" + msgs
+    out = out + ",\"temperature\":" + ai_temperature_texte(r.temperature_millieme)
+    if r.max_tokens > 0 {
+        out = out + ",\"max_tokens\":" + text(r.max_tokens)
+    }
+    return out + "}"
+}
+
+// ---- Réponse ----
+//
+// Extraction pragmatique du contenu textuel d'une réponse chat JSON
+// (« "content":"..." »). Un vrai décodeur JSON viendra avec nol.serde.
+
+fn reponse_contenu(json: Text) -> Option<Text> {
+    let marqueur = "\"content\":\""
+    let i = unwrap_or(find(json, marqueur), -1)
+    if i < 0 {
+        return none
+    }
+    let debut = i + len(marqueur)
+    let reste = sub(json, debut, len(json) - debut)
+    // Jusqu'au prochain guillemet non échappé (approximation : premier « " »).
+    let fin = unwrap_or(find(reste, "\""), -1)
+    if fin < 0 {
+        return none
+    }
+    return some(sub(reste, 0, fin))
+}
+
+// ============================ TESTS ============================
+
+fn test_messages() {
+    assert(message_systeme("s").role == "system", "role systeme")
+    assert(message_utilisateur("u").role == "user", "role user")
+    assert(message_json(message_utilisateur("salut")) == "{\"role\":\"user\",\"content\":\"salut\"}", "message json")
+}
+
+fn test_temperature() {
+    assert(ai_temperature_texte(700) == "0.700", "0.7")
+    assert(ai_temperature_texte(1500) == "1.500", "1.5")
+    assert(ai_temperature_texte(0) == "0.000", "0")
+}
+
+fn test_requete_json() {
+    var r = requete_neuve("gpt-local")
+    push(r.messages, message_systeme("Tu es utile."))
+    push(r.messages, message_utilisateur("Bonjour"))
+    let j = requete_json(r)
+    assert(contains(j, "\"model\":\"gpt-local\""), "modele present")
+    assert(contains(j, "\"role\":\"system\""), "message systeme")
+    assert(contains(j, "\"role\":\"user\""), "message user")
+    assert(contains(j, "\"temperature\":0.700"), "temperature")
+}
+
+fn test_echappement() {
+    let m = message_utilisateur("dit \"salut\"\net saute")
+    let j = message_json(m)
+    assert(contains(j, "\\\"salut\\\""), "guillemets echappes")
+    assert(contains(j, "\\n"), "saut de ligne echappe")
+}
+
+fn test_reponse() {
+    let json = "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"Voici la reponse\"}}]}"
+    assert(unwrap_or(reponse_contenu(json), "") == "Voici la reponse", "contenu extrait")
+    assert(not has(reponse_contenu("{\"vide\":1}")), "aucun contenu")
+}
